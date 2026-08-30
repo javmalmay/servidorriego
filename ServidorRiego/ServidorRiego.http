@@ -1,0 +1,6 @@
+@ServidorRiego_HostAddress = http://localhost:5096
+
+GET {{ServidorRiego_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

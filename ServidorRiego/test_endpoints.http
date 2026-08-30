@@ -1,0 +1,26 @@
+### Variables
+@baseUrl = https://localhost:5001
+@token = 
+
+### 1. Registro de usuario
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "usuario_prueba",
+  "email": "usuario@example.com",
+  "password": "Password123!"
+}
+
+### 2. Login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "usuario_prueba",
+  "password": "Password123!"
+}
+
+### 3. Obtener perfil (requiere token)
+GET {{baseUrl}}/api/auth/profile
+Authorization: Bearer {{token}}

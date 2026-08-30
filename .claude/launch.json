@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "servidor-riego",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "ServidorRiego/ServidorRiego.csproj", "--urls", "http://localhost:5096"],
+      "port": 5096
+    }
+  ]
+}
