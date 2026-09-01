@@ -31,8 +31,10 @@ namespace ServidorRiego.Services
 
     public class DeviceService : IDeviceService
     {
+        // El dispositivo manda la MAC sin separadores (12 caracteres hexadecimales seguidos),
+        // no en el formato clásico AA:BB:CC:DD:EE:FF.
         private static readonly Regex MacAddressRegex = new(
-            @"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$",
+            @"^[0-9A-Fa-f]{12}$",
             RegexOptions.Compiled);
 
         private readonly RiegoDbContext _context;
@@ -102,16 +104,22 @@ namespace ServidorRiego.Services
             };
         }
 
+        /// <summary>
+        /// "Upsert por MAC": si no existe un dispositivo con esa MAC se crea y el usuario que
+        /// llama queda asociado como primer propietario (igual que antes). Si ya existe, NO se
+        /// vuelve a crear ni se toca su Name/ConfigJson: simplemente se asocia el usuario que
+        /// llama a ese dispositivo existente (o se informa si ya estaba asociado).
+        /// </summary>
         public async Task<DeviceResponse> CreateAsync(CreateDeviceRequest request, int creatorUserId)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(request.MacAddress) || string.IsNullOrWhiteSpace(request.Name))
+                if (string.IsNullOrWhiteSpace(request.MacAddress))
                 {
                     return new DeviceResponse
                     {
                         Success = false,
-                        Message = "MacAddress y Name son requeridos"
+                        Message = "MacAddress es requerido"
                     };
                 }
 
@@ -121,7 +129,24 @@ namespace ServidorRiego.Services
                     return new DeviceResponse
                     {
                         Success = false,
-                        Message = "La dirección MAC no tiene un formato válido (esperado AA:BB:CC:DD:EE:FF)"
+                        Message = "La dirección MAC no tiene un formato válido (esperado AABBCCDDEEFF)"
+                    };
+                }
+
+                var existingDevice = await _context.Devices
+                    .FirstOrDefaultAsync(d => d.MacAddress == normalizedMac);
+
+                if (existingDevice != null)
+                {
+                    return await LinkUserToExistingDeviceAsync(existingDevice.Id, creatorUserId);
+                }
+
+                if (string.IsNullOrWhiteSpace(request.Name))
+                {
+                    return new DeviceResponse
+                    {
+                        Success = false,
+                        Message = "Name es requerido para crear un dispositivo nuevo"
                     };
                 }
 
@@ -132,16 +157,6 @@ namespace ServidorRiego.Services
                     {
                         Success = false,
                         Message = "ConfigJson no contiene un JSON válido"
-                    };
-                }
-
-                var exists = await _context.Devices.AnyAsync(d => d.MacAddress == normalizedMac);
-                if (exists)
-                {
-                    return new DeviceResponse
-                    {
-                        Success = false,
-                        Message = "Ya existe un dispositivo registrado con esa dirección MAC"
                     };
                 }
 
@@ -184,6 +199,49 @@ namespace ServidorRiego.Services
                     Message = "Error al crear el dispositivo"
                 };
             }
+        }
+
+        /// <summary>
+        /// Asocia a un usuario a un dispositivo YA EXISTENTE sin exigir que el usuario que llama
+        /// ya esté asociado (a diferencia de <see cref="AssociateUserAsync(int, string, int)"/>,
+        /// que gestiona compartir acceso entre usuarios ya asociados). Se usa desde el "upsert"
+        /// de CreateAsync: cualquier usuario autenticado puede vincularse a un dispositivo físico
+        /// existente con solo conocer su MAC. Es idempotente: si ya estaba asociado, no falla.
+        /// </summary>
+        private async Task<DeviceResponse> LinkUserToExistingDeviceAsync(int deviceId, int userId)
+        {
+            var alreadyAssociated = await IsUserAssociatedAsync(deviceId, userId);
+
+            var device = await _context.Devices.FindAsync(deviceId);
+            if (device == null)
+            {
+                return NotFoundResponse();
+            }
+
+            if (alreadyAssociated)
+            {
+                return new DeviceResponse
+                {
+                    Success = true,
+                    Message = "Ya estabas asociado a este dispositivo",
+                    Device = MapDeviceToDto(device)
+                };
+            }
+
+            _context.UserDevices.Add(new UserDevice
+            {
+                UserId = userId,
+                DeviceId = deviceId,
+                CreatedAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            return new DeviceResponse
+            {
+                Success = true,
+                Message = "Dispositivo existente asociado a tu cuenta correctamente",
+                Device = MapDeviceToDto(device)
+            };
         }
 
         public async Task<DeviceResponse> UpdateAsync(int id, UpdateDeviceRequest request, int userId)
@@ -246,26 +304,50 @@ namespace ServidorRiego.Services
             }
         }
 
+        /// <summary>
+        /// "Elimina" el dispositivo para el usuario que llama: en realidad desasocia al usuario
+        /// del dispositivo. Solo se borra el dispositivo de la base de datos (y su token) si, tras
+        /// quitar esta asociación, no queda ningún otro usuario asociado a él.
+        /// </summary>
         public async Task<DeviceResponse> DeleteAsync(int id, int userId)
         {
-            if (!await IsUserAssociatedAsync(id, userId))
+            var association = await _context.UserDevices
+                .FirstOrDefaultAsync(ud => ud.DeviceId == id && ud.UserId == userId);
+
+            if (association == null)
             {
                 return NotFoundResponse();
             }
 
-            var device = await _context.Devices.FindAsync(id);
-            if (device == null)
+            _context.UserDevices.Remove(association);
+
+            // Se excluye explícitamente la propia asociación (userId) porque todavía no se ha
+            // guardado el Remove de arriba: esta consulta va directa a la BD y no vería el borrado
+            // pendiente en el ChangeTracker.
+            var otherAssociationsRemain = await _context.UserDevices
+                .AnyAsync(ud => ud.DeviceId == id && ud.UserId != userId);
+
+            string message;
+            if (otherAssociationsRemain)
             {
-                return NotFoundResponse();
+                message = "Dispositivo desasociado de tu cuenta correctamente";
+            }
+            else
+            {
+                var device = await _context.Devices.FindAsync(id);
+                if (device != null)
+                {
+                    _context.Devices.Remove(device);
+                }
+                message = "Dispositivo desasociado y eliminado (no quedaban más usuarios asociados)";
             }
 
-            _context.Devices.Remove(device);
             await _context.SaveChangesAsync();
 
             return new DeviceResponse
             {
                 Success = true,
-                Message = "Dispositivo eliminado correctamente"
+                Message = message
             };
         }
 
@@ -442,7 +524,13 @@ namespace ServidorRiego.Services
             Message = "Dispositivo no encontrado"
         };
 
-        private static string NormalizeMac(string mac) => mac.Trim().ToUpperInvariant();
+        /// <summary>Quita separadores (":" o "-", por si acaso) y deja la MAC en mayúsculas, 12 hex seguidos</summary>
+        private static string NormalizeMac(string mac)
+        {
+            mac = mac.Trim().ToUpperInvariant();
+            mac = mac.Replace(":", "").Replace("-", "");
+            return mac;
+        }
 
         private static bool IsValidJson(string value)
         {

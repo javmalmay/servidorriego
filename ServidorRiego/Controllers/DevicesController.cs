@@ -85,7 +85,7 @@ namespace ServidorRiego.Controllers
         /// <summary>
         /// Obtener un dispositivo por su dirección MAC (debe estar asociado al usuario autenticado)
         /// </summary>
-        /// <param name="mac">Dirección MAC del dispositivo (formato AA:BB:CC:DD:EE:FF)</param>
+        /// <param name="mac">Dirección MAC del dispositivo, 12 caracteres hexadecimales sin separadores (ej. AABBCCDDEEFF)</param>
         /// <returns>Datos del dispositivo</returns>
         /// <response code="200">Dispositivo encontrado</response>
         /// <response code="404">Dispositivo no encontrado o no asociado al usuario</response>
@@ -110,12 +110,17 @@ namespace ServidorRiego.Controllers
         }
 
         /// <summary>
-        /// Registrar un nuevo dispositivo. El usuario autenticado queda asociado automáticamente como primer propietario.
+        /// Registrar un dispositivo, o asociarse a uno ya existente ("upsert" por MAC).
+        /// Si la MAC no está registrada todavía, se crea el dispositivo (con Name/ConfigJson) y el
+        /// usuario autenticado queda asociado automáticamente como primer propietario, devolviendo
+        /// el token secreto (solo se muestra esta vez). Si la MAC ya existe, no se crea nada nuevo
+        /// ni se modifica el dispositivo: simplemente se asocia el usuario autenticado a él (Name/
+        /// ConfigJson del request se ignoran, y DeviceToken vuelve null porque ya se entregó antes).
         /// </summary>
-        /// <param name="request">Datos del dispositivo (MAC, nombre y configuración JSON opcional)</param>
-        /// <returns>Dispositivo creado, incluyendo el token secreto (solo se muestra una vez)</returns>
-        /// <response code="201">Dispositivo creado correctamente</response>
-        /// <response code="400">Datos inválidos o MAC ya registrada</response>
+        /// <param name="request">Datos del dispositivo (MAC obligatoria; nombre y configuración JSON solo si es nuevo)</param>
+        /// <returns>Dispositivo creado o asociado</returns>
+        /// <response code="201">Dispositivo creado, o ya existente y ahora asociado a tu cuenta</response>
+        /// <response code="400">Datos inválidos (p. ej. falta el nombre al crear uno nuevo)</response>
         [HttpPost]
         [ProducesResponseType(typeof(DeviceResponse), StatusCodes.Status201Created)]
         [ProducesResponseType(typeof(DeviceResponse), StatusCodes.Status400BadRequest)]
@@ -169,11 +174,12 @@ namespace ServidorRiego.Controllers
         }
 
         /// <summary>
-        /// Eliminar un dispositivo (y todas sus asociaciones de usuario)
+        /// Desasociar el dispositivo de la cuenta del usuario autenticado. Si tras esto no queda
+        /// ningún otro usuario asociado, el dispositivo se elimina de la base de datos por completo.
         /// </summary>
         /// <param name="id">Identificador del dispositivo</param>
         /// <returns>Resultado de la operación</returns>
-        /// <response code="200">Dispositivo eliminado correctamente</response>
+        /// <response code="200">Dispositivo desasociado (y, si era el último usuario, eliminado)</response>
         /// <response code="404">Dispositivo no encontrado o no asociado al usuario</response>
         [HttpDelete("{id:int}")]
         [ProducesResponseType(typeof(DeviceResponse), StatusCodes.Status200OK)]

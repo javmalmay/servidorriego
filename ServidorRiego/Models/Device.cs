@@ -7,7 +7,7 @@ namespace ServidorRiego.Models
     {
         public int Id { get; set; }
 
-        /// <summary>Dirección MAC del dispositivo, formato AA:BB:CC:DD:EE:FF (identificador único de hardware)</summary>
+        /// <summary>Dirección MAC del dispositivo, 12 caracteres hexadecimales sin separadores, ej. AABBCCDDEEFF (identificador único de hardware)</summary>
         public string MacAddress { get; set; } = string.Empty;
 
         /// <summary>Nombre descriptivo asignado al dispositivo</summary>

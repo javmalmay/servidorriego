@@ -8,7 +8,7 @@ namespace ServidorRiego.Dtos
         /// <summary>Identificador único del dispositivo</summary>
         public int Id { get; set; }
 
-        /// <summary>Dirección MAC del dispositivo (formato AA:BB:CC:DD:EE:FF)</summary>
+        /// <summary>Dirección MAC del dispositivo, 12 caracteres hexadecimales sin separadores (ej. AABBCCDDEEFF)</summary>
         public string MacAddress { get; set; } = string.Empty;
 
         /// <summary>Nombre descriptivo del dispositivo</summary>
@@ -31,17 +31,21 @@ namespace ServidorRiego.Dtos
     }
 
     /// <summary>
-    /// Solicitud para crear un nuevo dispositivo
+    /// Solicitud para crear (o, si la MAC ya existe, simplemente asociarse a) un dispositivo.
+    /// Si no existe ningún dispositivo con esa MAC, se crea uno nuevo con Name/ConfigJson y el
+    /// usuario que llama queda asociado como primer propietario. Si ya existe un dispositivo con
+    /// esa MAC, Name y ConfigJson se ignoran (no se sobrescriben) y solo se asocia el usuario que
+    /// llama a ese dispositivo existente.
     /// </summary>
     public class CreateDeviceRequest
     {
-        /// <summary>Dirección MAC del dispositivo (formato AA:BB:CC:DD:EE:FF), debe ser única</summary>
+        /// <summary>Dirección MAC del dispositivo, 12 caracteres hexadecimales sin separadores (ej. AABBCCDDEEFF)</summary>
         public string MacAddress { get; set; } = string.Empty;
 
-        /// <summary>Nombre descriptivo del dispositivo</summary>
+        /// <summary>Nombre descriptivo del dispositivo. Requerido solo si es un dispositivo nuevo (MAC no registrada todavía)</summary>
         public string Name { get; set; } = string.Empty;
 
-        /// <summary>Configuración inicial en formato JSON (opcional, por defecto "{}")</summary>
+        /// <summary>Configuración inicial en formato JSON (opcional, por defecto "{}"). Solo aplica al crear un dispositivo nuevo</summary>
         public string? ConfigJson { get; set; }
     }
 

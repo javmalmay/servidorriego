@@ -56,7 +56,7 @@ namespace ServidorRiego.Migrations
                     b.HasIndex("MacAddress")
                         .IsUnique();
 
-                    b.ToTable("Devices");
+                    b.ToTable("Devices", (string)null);
                 });
 
             modelBuilder.Entity("ServidorRiego.Models.RefreshToken", b =>
@@ -93,7 +93,7 @@ namespace ServidorRiego.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("RefreshTokens");
+                    b.ToTable("RefreshTokens", (string)null);
                 });
 
             modelBuilder.Entity("ServidorRiego.Models.User", b =>
@@ -135,7 +135,7 @@ namespace ServidorRiego.Migrations
                     b.HasIndex("Username")
                         .IsUnique();
 
-                    b.ToTable("Users");
+                    b.ToTable("Users", (string)null);
                 });
 
             modelBuilder.Entity("ServidorRiego.Models.UserDevice", b =>
@@ -162,7 +162,7 @@ namespace ServidorRiego.Migrations
                     b.HasIndex("UserId", "DeviceId")
                         .IsUnique();
 
-                    b.ToTable("UserDevices");
+                    b.ToTable("UserDevices", (string)null);
                 });
 
             modelBuilder.Entity("ServidorRiego.Models.RefreshToken", b =>

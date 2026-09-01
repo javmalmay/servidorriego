@@ -66,7 +66,7 @@ namespace ServidorRiego.Data
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.MacAddress)
                     .IsRequired()
-                    .HasMaxLength(17); // AA:BB:CC:DD:EE:FF
+                    .HasMaxLength(12); // 12 hex sin separadores, ej. AABBCCDDEEFF
                 entity.Property(e => e.Name)
                     .IsRequired()
                     .HasMaxLength(100);
