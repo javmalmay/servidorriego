@@ -1,4 +1,4 @@
-# ?? GuÌa de Despliegue - Servidor de Riego
+# Gu√≠a de Despliegue - Servidor de Riego
 
 ## Desarrollo Local
 
@@ -16,16 +16,16 @@ Acceder en: `https://localhost:5001`
 
 ---
 
-## Despliegue en ProducciÛn
+## Despliegue en Producci√≥n
 
-### 1. Preparar la aplicaciÛn
+### 1. Preparar la aplicaci√≥n
 
 #### Compilar para release
 ```bash
 dotnet publish -c Release -o ./publish
 ```
 
-#### Verificar configuraciÛn en appsettings.json
+#### Verificar configuraci√≥n en appsettings.json
 ```json
 {
   "Logging": {
@@ -35,28 +35,28 @@ dotnet publish -c Release -o ./publish
   },
   "Jwt": {
     "Key": "USAR_CLAVE_SECRETA_MUY_LARGA_ALEATORIA",
-    "ExpirationMinutes": 60  // Ajustar seg˙n necesidad
+    "ExpirationMinutes": 60  // Ajustar seg√∫n necesidad
   }
 }
 ```
 
 ### 2. Opciones de Hosting
 
-#### OpciÛn A: Windows Server con IIS
+#### Opci√≥n A: Windows Server con IIS
 
 **Requisitos:**
 - Windows Server 2016+
 - IIS 10+
 - .NET Hosting Bundle
 
-**InstalaciÛn:**
+**Instalaci√≥n:**
 1. Descargar .NET Hosting Bundle: https://dotnet.microsoft.com/download
 2. Instalar en el servidor
 3. Copiar carpeta `publish` al servidor
 4. Crear Application Pool en IIS
 5. Crear sitio web apuntando a la carpeta
 
-**web.config (crear en la raÌz de publish):**
+**web.config (crear en la ra√≠z de publish):**
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
@@ -71,7 +71,7 @@ dotnet publish -c Release -o ./publish
 </configuration>
 ```
 
-#### OpciÛn B: Docker
+#### Opci√≥n B: Docker
 
 **Dockerfile:**
 ```dockerfile
@@ -117,7 +117,7 @@ services:
 docker-compose up -d
 ```
 
-#### OpciÛn C: Linux con Systemd
+#### Opci√≥n C: Linux con Systemd
 
 **Crear servicio:**
 ```bash
@@ -154,18 +154,18 @@ sudo systemctl start servidor-riego
 sudo systemctl status servidor-riego
 ```
 
-#### OpciÛn D: Azure App Service
+#### Opci√≥n D: Azure App Service
 
 1. Crear un App Service en Azure Portal
 2. Configurar deployment desde GitHub o local
-3. Configuar variables de entorno en Configuration
+3. Configurar variables de entorno en Configuration
 
 ```
 Jwt__Key = tu_clave_secreta_larga
 ASPNETCORE_ENVIRONMENT = Production
 ```
 
-#### OpciÛn E: Heroku
+#### Opci√≥n E: Heroku
 
 ```bash
 # Instalar Heroku CLI
@@ -182,16 +182,16 @@ dotnet dev-certs https --clean
 dotnet dev-certs https --trust
 ```
 
-#### Para ProducciÛn
+#### Para Producci√≥n
 
-**OpciÛn 1: Let's Encrypt (Recomendado - Gratuito)**
+**Opci√≥n 1: Let's Encrypt (Recomendado - Gratuito)**
 ```bash
 # En Ubuntu/Debian
 sudo apt-get install certbot python3-certbot-nginx
 sudo certbot certonly --standalone -d tudominio.com
 ```
 
-**OpciÛn 2: Certificado comercial**
+**Opci√≥n 2: Certificado comercial**
 - Comprar en providers como Sectigo, DigiCert, etc.
 - Instalar en el servidor
 
@@ -204,7 +204,7 @@ sudo certbot certonly --standalone -d tudominio.com
         "Url": "https://+:443",
         "Certificate": {
           "Path": "/path/to/cert.pfx",
-          "Password": "tu_contraseÒa"
+          "Password": "tu_contrase√±a"
         }
       }
     }
@@ -223,7 +223,7 @@ sudo ufw enable
 
 ### 5. Proxy Inverso (Nginx)
 
-**ConfiguraciÛn Nginx:**
+**Configuraci√≥n Nginx:**
 ```nginx
 server {
     listen 80;
@@ -259,14 +259,14 @@ server {
 
 ### 6. Backup de Base de Datos
 
-**Script de backup autom·tico (Linux):**
+**Script de backup autom√°tico (Linux):**
 ```bash
 #!/bin/bash
 # backup.sh
 BACKUP_DIR="/backups/servidor-riego"
 DATE=$(date +%Y%m%d_%H%M%S)
 cp /opt/servidor-riego/riego.db $BACKUP_DIR/riego_$DATE.db.bak
-find $BACKUP_DIR -name "*.bak" -mtime +7 -delete  # Mantener 7 dÌas
+find $BACKUP_DIR -name "*.bak" -mtime +7 -delete  # Mantener 7 d√≠as
 ```
 
 **Cron job:**
@@ -276,21 +276,29 @@ find $BACKUP_DIR -name "*.bak" -mtime +7 -delete  # Mantener 7 dÌas
 
 ### 7. Monitoreo y Logs
 
-#### Con Serilog (Opcional)
+#### Logs con Serilog (ya implementado)
+
+El proyecto ya trae Serilog configurado (`Serilog.AspNetCore` + `Serilog.Sinks.File`, ver `Program.cs`).
+Escribe a la vez a consola (visible con `journalctl`, ver m√°s abajo) y a fichero, con rotaci√≥n
+diaria y 14 d√≠as de retenci√≥n autom√°tica. La ruta del fichero se lee de `Logging:FilePath`:
+
+- En desarrollo (o si no se configura nada): `logs/servidor-riego-.log`, relativo al directorio de
+  trabajo (funciona igual en Windows).
+- En producci√≥n: `appsettings.Production.json` la fija en `/var/log/servidor-riego/servidor-riego-.log`.
+  Solo se aplica cuando `ASPNETCORE_ENVIRONMENT=Production` (ya configurado en el `.service` de m√°s
+  arriba).
+
+**Antes de arrancar el servicio en Ubuntu, crea el directorio y dale permisos al usuario del servicio**
+(`www-data` en el ejemplo de m√°s arriba; c√°mbialo si usas otro `User=` en el `.service`):
 ```bash
-dotnet add package Serilog.AspNetCore
-dotnet add package Serilog.Sinks.File
+sudo mkdir -p /var/log/servidor-riego
+sudo chown www-data:www-data /var/log/servidor-riego
+sudo systemctl restart servidor-riego
 ```
 
-En Program.cs:
-```csharp
-builder.Host.UseSerilog((context, logger) =>
-{
-    logger.MinimumLevel.Information()
-        .WriteTo.File("logs/app-.txt", rollingInterval: RollingInterval.Day)
-        .Enrich.FromLogContext();
-});
-```
+Si el directorio no existe o no tiene permisos, Serilog no puede escribir el fichero ‚Äî pero no tira
+la aplicaci√≥n abajo, simplemente esa escritura falla en silencio y solo ver√°s los logs por
+`journalctl` (por la salida a consola, que systemd sigue capturando).
 
 ### 8. Monitoreo de Rendimiento
 
@@ -305,7 +313,7 @@ netstat -tulpn | grep LISTEN
 journalctl -u servidor-riego -f
 ```
 
-### 9. Actualizar a Nueva VersiÛn
+### 9. Actualizar a Nueva Versi√≥n
 
 ```bash
 # Compilar
@@ -327,7 +335,7 @@ sudo systemctl start servidor-riego
 sudo systemctl status servidor-riego
 ```
 
-### 10. Troubleshooting en ProducciÛn
+### 10. Troubleshooting en Producci√≥n
 
 **Puerto ya en uso:**
 ```bash
@@ -353,30 +361,30 @@ journalctl -u servidor-riego -e --lines=100
 
 ---
 
-## Checklist Pre-ProducciÛn
+## Checklist Pre-Producci√≥n
 
 - [ ] Cambiar JWT Key en appsettings.json
-- [ ] Configurar certificado SSL/TLS v·lido
-- [ ] Restringir CORS a dominios especÌficos
-- [ ] Configurar backup autom·tico de BD
+- [ ] Configurar certificado SSL/TLS v√°lido
+- [ ] Restringir CORS a dominios espec√≠ficos
+- [ ] Configurar backup autom√°tico de BD
 - [ ] Configurar logging y monitoreo
 - [ ] Probar endpoints desde Android
 - [ ] Verificar HTTPS funciona correctamente
 - [ ] Configurar firewall
-- [ ] Crear plan de recuperaciÛn ante desastres
-- [ ] Documentar credenciales de administraciÛn
+- [ ] Crear plan de recuperaci√≥n ante desastres
+- [ ] Documentar credenciales de administraci√≥n
 
 ---
 
 ## Monitoreo Post-Despliegue
 
-1. Verificar que el servicio est· corriendo
-2. Probar endpoints de autenticaciÛn
+1. Verificar que el servicio est√° corriendo
+2. Probar endpoints de autenticaci√≥n
 3. Revisar logs regularmente
 4. Monitorear uso de CPU y memoria
-5. Verificar conectividad desde aplicaciÛn Android
+5. Verificar conectividad desde aplicaci√≥n Android
 
 ---
 
-**⁄ltima actualizaciÛn**: 2024
-**VersiÛn de .NET**: 9.0
+**√öltima actualizaci√≥n**: 2024
+**Versi√≥n de .NET**: 9.0

@@ -34,11 +34,13 @@ namespace ServidorRiego.Realtime
                 context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 return;
             }
-
+            logger.LogInformation($"Recibida una nueva conexión de dispositivo por WebSocket");
             var token = context.Request.Query["token"].ToString();
+            logger.LogDebug($"Intentando conectar con el token {token}");
             var device = await deviceService.ValidateDeviceTokenAsync(token);
             if (device == null)
             {
+                logger.LogWarning($"No se ha encontrado ningún dispositivo con el accesstoken indicado");
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return;
             }
@@ -60,9 +62,22 @@ namespace ServidorRiego.Realtime
                     await deviceService.UpdateLastSeenAsync(device.Id);
 
                     var payload = TryParsePayload(rawMessage);
-                    await NotifyAssociatedUsersAsync(
-                        deviceService, connectionManager, device.Id, device.MacAddress, device.Name,
-                        WsMessageType.DeviceStatus, payload);
+                    var incomingCorrelationId = TryExtractCorrelationId(payload);
+
+                    if (connectionManager.TryResolveCommand(device.Id, incomingCorrelationId, out var pendingUserId, out var resolvedCorrelationId))
+                    {
+                        // Hay un comando en curso de este dispositivo: este mensaje es su respuesta,
+                        // se reenvía SOLO al usuario que lo envió (no se difunde a los demás asociados).
+                        var responseEnvelope = BuildEnvelope(WsMessageType.CommandResponse, device.Id, device.MacAddress, device.Name, payload, resolvedCorrelationId);
+                        await connectionManager.SendToUserAsync(pendingUserId, responseEnvelope);
+                    }
+                    else
+                    {
+                        // Sin comando pendiente: es telemetría/estado espontáneo, se difunde a todos los asociados.
+                        await NotifyAssociatedUsersAsync(
+                            deviceService, connectionManager, device.Id, device.MacAddress, device.Name,
+                            WsMessageType.DeviceStatus, payload);
+                    }
                 });
             }
             finally
@@ -70,6 +85,10 @@ namespace ServidorRiego.Realtime
                 // RemoveDeviceConnection deja al dispositivo como "desconectado" en memoria de inmediato,
                 // se pierda la conexión de la forma que se pierda (cierre limpio, error de red, etc.).
                 connectionManager.RemoveDeviceConnection(device.Id, connectionId);
+                // Si había comandos esperando respuesta y el dispositivo se desconecta sin
+                // responder, se descartan: evita que una futura reconexión con telemetría espontánea
+                // se enrute por error como respuesta a un comando ya perdido.
+                connectionManager.ClearPendingCommandsForDevice(device.Id);
                 await deviceService.UpdateLastSeenAsync(device.Id);
                 await NotifyAssociatedUsersAsync(deviceService, connectionManager, device.Id, device.MacAddress, device.Name, WsMessageType.DeviceOffline, null);
                 logger.LogInformation($"Dispositivo {device.Id} ({device.MacAddress}) desconectado del WebSocket");
@@ -88,9 +107,12 @@ namespace ServidorRiego.Realtime
                 return;
             }
 
+            logger.LogInformation($"Recibida una nueva conexión de usuario por WebSocket");
+
             var userIdClaim = context.User.FindFirst("userId");
             if (!int.TryParse(userIdClaim?.Value, out var userId))
             {
+                logger.LogWarning($"No se puede obtener el id de usuario");
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return;
             }
@@ -103,7 +125,7 @@ namespace ServidorRiego.Realtime
             {
                 await ReceiveLoopAsync(socket, async rawMessage =>
                 {
-                    await HandleUserMessageAsync(rawMessage, userId, deviceService, connectionManager, socket);
+                    await HandleUserMessageAsync(rawMessage, userId, deviceService, connectionManager);
                 });
             }
             finally
@@ -117,39 +139,58 @@ namespace ServidorRiego.Realtime
             string rawMessage,
             int userId,
             IDeviceService deviceService,
-            WebSocketConnectionManager connectionManager,
-            WebSocket socket)
+            WebSocketConnectionManager connectionManager)
         {
-            WsIncomingMessage? message;
+            DeviceCommandRequest? command;
             try
             {
-                message = JsonSerializer.Deserialize<WsIncomingMessage>(rawMessage, JsonOptions);
+                command = JsonSerializer.Deserialize<DeviceCommandRequest>(rawMessage, JsonOptions);
             }
             catch (JsonException)
             {
-                await SendErrorAsync(socket, "Mensaje no es un JSON válido");
+                await SendErrorToUserAsync(connectionManager, userId, "Mensaje no es un JSON válido");
                 return;
             }
 
-            if (message == null || message.Type != WsMessageType.Command || message.DeviceId == null)
+            if (command == null || command.DeviceId <= 0 || string.IsNullOrWhiteSpace(command.Comando))
             {
-                await SendErrorAsync(socket, "Mensaje debe ser de tipo 'command' con un deviceId");
+                await SendErrorToUserAsync(connectionManager, userId, "El mensaje debe incluir DeviceId y Comando");
                 return;
             }
 
-            var isAssociated = await deviceService.IsUserAssociatedAsync(message.DeviceId.Value, userId);
+            var isAssociated = await deviceService.IsUserAssociatedAsync(command.DeviceId, userId);
             if (!isAssociated)
             {
-                await SendErrorAsync(socket, "No tienes acceso a ese dispositivo");
+                await SendErrorToUserAsync(connectionManager, userId, "No tienes acceso a ese dispositivo");
                 return;
             }
 
-            var envelope = BuildEnvelope(WsMessageType.Command, message.DeviceId, null, null, message.Payload);
-            var delivered = await connectionManager.SendToDeviceAsync(message.DeviceId.Value, envelope);
+            // Se genera un CorrelationId nuevo y se recuerda a qué usuario reenviarle la respuesta
+            // del dispositivo cuando llegue (ver HandleDeviceConnectionAsync).
+            var correlationId = connectionManager.RegisterPendingCommand(command.DeviceId, userId);
+
+            // Al dispositivo se le manda el comando tal cual, SIN el DeviceId (ya sabe quién es),
+            // pero CON el CorrelationId para que lo devuelva en su respuesta.
+            var commandForDevice = JsonSerializer.Serialize(new DeviceCommandForward
+            {
+                Comando = command.Comando,
+                Parametros = command.Parametros,
+                CorrelationId = correlationId
+            }, JsonOptions);
+
+            var delivered = await connectionManager.SendToDeviceAsync(command.DeviceId, commandForDevice);
             if (!delivered)
             {
-                await SendErrorAsync(socket, "El dispositivo no está conectado en este momento");
+                connectionManager.ClearPendingCommand(correlationId);
+                await SendErrorToUserAsync(connectionManager, userId, "El dispositivo no está conectado en este momento");
+                return;
             }
+
+            // Confirmación inmediata con el CorrelationId, para que la app pueda casarlo más
+            // tarde con el "command_response" que llegue (el servidor lo genera, el cliente no
+            // lo conoce hasta este punto).
+            var ackEnvelope = BuildEnvelope(WsMessageType.CommandSent, command.DeviceId, null, null, null, correlationId);
+            await connectionManager.SendToUserAsync(userId, ackEnvelope);
         }
 
         private static async Task NotifyAssociatedUsersAsync(
@@ -169,7 +210,7 @@ namespace ServidorRiego.Realtime
             }
         }
 
-        private static string BuildEnvelope(string type, int? deviceId, string? macAddress, string? deviceName, JsonElement? payload)
+        private static string BuildEnvelope(string type, int? deviceId, string? macAddress, string? deviceName, JsonElement? payload, string? correlationId = null)
         {
             var envelope = new Dictionary<string, object?>
             {
@@ -178,9 +219,34 @@ namespace ServidorRiego.Realtime
                 ["macAddress"] = macAddress,
                 ["deviceName"] = deviceName,
                 ["payload"] = payload,
+                ["correlationId"] = correlationId,
                 ["timestamp"] = DateTime.UtcNow
             };
             return JsonSerializer.Serialize(envelope, JsonOptions);
+        }
+
+        /// <summary>
+        /// Busca un CorrelationId ("CorrelationId" o "correlationId") en el objeto JSON que mandó
+        /// el dispositivo como respuesta. Devuelve null si el payload no es un objeto o no lo trae.
+        /// </summary>
+        private static string? TryExtractCorrelationId(JsonElement? payload)
+        {
+            if (payload == null || payload.Value.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            if (payload.Value.TryGetProperty("CorrelationId", out var pascalValue) && pascalValue.ValueKind == JsonValueKind.String)
+            {
+                return pascalValue.GetString();
+            }
+
+            if (payload.Value.TryGetProperty("correlationId", out var camelValue) && camelValue.ValueKind == JsonValueKind.String)
+            {
+                return camelValue.GetString();
+            }
+
+            return null;
         }
 
         private static JsonElement? TryParsePayload(string rawMessage)
@@ -197,16 +263,16 @@ namespace ServidorRiego.Realtime
             }
         }
 
-        private static async Task SendErrorAsync(WebSocket socket, string message)
+        /// <summary>
+        /// Manda un "error" al usuario indicado a través de WebSocketConnectionManager (no
+        /// escribiendo directo al WebSocket), para que el envío quede serializado por el
+        /// SendLock de la conexión igual que cualquier otro mensaje y no choque con un envío
+        /// concurrente a ese mismo usuario desde otro punto (p. ej. una notificación de otro dispositivo).
+        /// </summary>
+        private static async Task SendErrorToUserAsync(WebSocketConnectionManager connectionManager, int userId, string message)
         {
-            if (socket.State != WebSocketState.Open)
-            {
-                return;
-            }
-
             var envelope = BuildEnvelope(WsMessageType.Error, null, null, null, JsonSerializer.SerializeToElement(message));
-            var bytes = Encoding.UTF8.GetBytes(envelope);
-            await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            await connectionManager.SendToUserAsync(userId, envelope);
         }
 
         /// <summary>

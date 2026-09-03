@@ -1,8 +1,31 @@
+using Serilog;
+using Serilog.Events;
 using ServidorRiego.Data;
 using ServidorRiego.Realtime;
 using ServidorRiego.Services;
 
 var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder(args);
+
+// Logging: Serilog reemplaza los providers por defecto y escribe tanto a consola (se sigue viendo
+// con journalctl si se ejecuta bajo systemd, ya que systemd captura stdout) como a un fichero con
+// rotación diaria y retención de 14 días. La ruta es configurable con "Logging:FilePath";
+// appsettings.Production.json la fija en /var/log/servidor-riego para el despliegue en Ubuntu. En
+// desarrollo (o si no se configura) cae en una carpeta relativa "logs/", que también funciona en Windows.
+var logFilePath = builder.Configuration["Logging:FilePath"] ?? "logs/servidor-riego-.log";
+builder.Host.UseSerilog((context, loggerConfig) =>
+{
+    loggerConfig
+        .MinimumLevel.Information()
+        .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
+        .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
+        .Enrich.FromLogContext()
+        .WriteTo.Console()
+        .WriteTo.File(
+            logFilePath,
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: 14,
+            outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+});
 
 // Add services to the container.
 builder.Services.AddControllers();

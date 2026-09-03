@@ -21,6 +21,19 @@ namespace ServidorRiego.Realtime
 
         private readonly ConcurrentDictionary<int, ConcurrentDictionary<Guid, Connection>> _deviceConnections = new();
         private readonly ConcurrentDictionary<int, ConcurrentDictionary<Guid, Connection>> _userConnections = new();
+
+        private class PendingCommand
+        {
+            public required int DeviceId { get; init; }
+            public required int UserId { get; init; }
+            public required DateTime SentAt { get; init; }
+        }
+
+        // Correlación comando -> respuesta, por CorrelationId (no por dispositivo): permite varios
+        // comandos en curso a la vez para el mismo dispositivo sin que se pisen entre sí. Solo en
+        // memoria; se pierde si el proceso se reinicia (los comandos en curso quedarían sin respuesta).
+        private readonly ConcurrentDictionary<string, PendingCommand> _pendingCommands = new();
+
         private readonly ILogger<WebSocketConnectionManager> _logger;
 
         public WebSocketConnectionManager(ILogger<WebSocketConnectionManager> logger)
@@ -70,6 +83,74 @@ namespace ServidorRiego.Realtime
 
         public bool IsDeviceConnected(int deviceId) =>
             _deviceConnections.TryGetValue(deviceId, out var bucket) && !bucket.IsEmpty;
+
+        /// <summary>
+        /// Genera un CorrelationId nuevo y registra que la respuesta a ese comando (cuando el
+        /// dispositivo la mande) hay que reenviársela a este usuario. El CorrelationId generado
+        /// es el que hay que incluir en el mensaje que se le manda al dispositivo.
+        /// </summary>
+        public string RegisterPendingCommand(int deviceId, int userId)
+        {
+            var correlationId = Guid.NewGuid().ToString("N");
+            _pendingCommands[correlationId] = new PendingCommand
+            {
+                DeviceId = deviceId,
+                UserId = userId,
+                SentAt = DateTime.UtcNow
+            };
+            return correlationId;
+        }
+
+        /// <summary>
+        /// Intenta averiguar a qué usuario hay que reenviarle un mensaje recibido de un dispositivo,
+        /// y con qué CorrelationId. Si el dispositivo devolvió un correlationId reconocible (y
+        /// corresponde a ESE dispositivo) se usa directamente. Si no devolvió ninguno pero hay
+        /// comandos en curso para ese dispositivo, se asume (mejor esfuerzo) que responde al más
+        /// antiguo todavía pendiente. Si no hay ningún comando pendiente para el dispositivo,
+        /// devuelve false (el mensaje se trata como telemetría espontánea, no como respuesta).
+        /// </summary>
+        public bool TryResolveCommand(int deviceId, string? correlationId, out int userId, out string? resolvedCorrelationId)
+        {
+            if (!string.IsNullOrEmpty(correlationId)
+                && _pendingCommands.TryGetValue(correlationId, out var exact)
+                && exact.DeviceId == deviceId
+                && _pendingCommands.TryRemove(correlationId, out _))
+            {
+                userId = exact.UserId;
+                resolvedCorrelationId = correlationId;
+                return true;
+            }
+
+            var oldestPending = _pendingCommands
+                .Where(kv => kv.Value.DeviceId == deviceId)
+                .OrderBy(kv => kv.Value.SentAt)
+                .Select(kv => (Key: kv.Key, Value: kv.Value))
+                .FirstOrDefault();
+
+            if (oldestPending.Key != null && _pendingCommands.TryRemove(oldestPending.Key, out _))
+            {
+                userId = oldestPending.Value.UserId;
+                resolvedCorrelationId = oldestPending.Key;
+                return true;
+            }
+
+            userId = 0;
+            resolvedCorrelationId = null;
+            return false;
+        }
+
+        /// <summary>Descarta un comando pendiente concreto (p. ej. si no se pudo entregar al dispositivo)</summary>
+        public void ClearPendingCommand(string correlationId) =>
+            _pendingCommands.TryRemove(correlationId, out _);
+
+        /// <summary>Descarta todos los comandos pendientes de un dispositivo, p. ej. al desconectarse</summary>
+        public void ClearPendingCommandsForDevice(int deviceId)
+        {
+            foreach (var key in _pendingCommands.Where(kv => kv.Value.DeviceId == deviceId).Select(kv => kv.Key).ToList())
+            {
+                _pendingCommands.TryRemove(key, out _);
+            }
+        }
 
         /// <summary>Envía un mensaje de texto a todas las conexiones activas de un dispositivo. Devuelve true si había al menos una.</summary>
         public async Task<bool> SendToDeviceAsync(int deviceId, string jsonMessage, CancellationToken cancellationToken = default)
